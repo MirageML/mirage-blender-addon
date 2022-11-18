@@ -3,6 +3,8 @@ import os
 import bpy
 import requests
 from bpy.types import Operator, Panel, PropertyGroup
+from multiprocessing import Pool
+from concurrent.futures import ThreadPoolExecutor
 
 MIRAGE_API = "https://api.mirageml.com"
 DEFAULT_PROMPT = "a photo of a wooden house, minecraft, computer graphics"
@@ -46,13 +48,18 @@ class API:
         )
         return resp.json()
 
+def batch_requests(params):
+    path, url = params
+    image_response = requests.get(url)
+    with open(path, "wb") as f:
+        f.write(image_response.content)
+
 
 def enum_previews_from_directory_items(self, context):
     """EnumProperty callback"""
     enum_items = []
 
-    if context is None:
-        return enum_items
+    if context is None: return enum_items
 
     wm = context.window_manager
     directory = wm.my_previews_dir
@@ -60,13 +67,10 @@ def enum_previews_from_directory_items(self, context):
     # Get the preview collection (defined in register func).
     pcoll = preview_collection["main"]
 
-    if directory == pcoll.my_previews_dir:
+    if directory == pcoll.my_previews_dir or len(pcoll.my_previews) != 0:
         return pcoll.my_previews
 
-    if len(pcoll.my_previews) != 0:
-        return pcoll.my_previews
-
-    data = API.list_projects(os.environ["MIRAGE_API_KEY"], os.environ["MIRAGE_AUTH_KEY"])
+    data = API.list_projects(bpy.context.scene.PromptProps.api_key, bpy.context.scene.PromptProps.auth_token)
 
     if not data or len(data) == 0:
         return preview_collection["default"]
@@ -78,16 +82,21 @@ def enum_previews_from_directory_items(self, context):
 
     image_paths = []
     prompts = []
-    missing_thumbnail = False
+    paths = []
+    urls = []
     for i, node in enumerate(data):
         mesh = node["node"]
-        png = "/tmp/" + mesh["id"] + ".png"
-        if not os.path.exists(png):
-            image_response = requests.get(mesh["meshPNGUrl"])
-            with open(png, "wb") as f:
-                f.write(image_response.content)
+        path = "/tmp/" + mesh["id"] + ".png"
+        if not os.path.exists(path):
+            paths.append(path)
+            urls.append(mesh["meshPNGUrl"])
         image_paths.append(mesh["id"] + ".png")
         prompts.append(mesh["prompt"])
+
+    p = ThreadPoolExecutor()
+    p.map(batch_requests, zip(paths, urls))
+    # Close the pool and wait for the work to finish
+    p.shutdown(wait=True)
 
     for i, name in enumerate(image_paths):
         # generates a thumbnail preview for a file.
@@ -117,7 +126,7 @@ class CreateNewMirageProjectOp(Operator):
 
     def execute(self, context):
         prompt = bpy.context.scene.PromptProps.new_prompt
-        API.create_project(prompt)
+        API.create_project(prompt, bpy.context.scene.PromptProps.api_key, bpy.context.scene.PromptProps.auth_token)
         return {"FINISHED"}
 
 
@@ -134,7 +143,7 @@ class DownloadFromMirageOp(Operator):
         }
 
         bpy.ops.import_scene.gltf(
-            filepath="/Users/jeremyfisher/Downloads/hamburger.glb"
+            filepath="/Users/amankishore/Downloads/hamburger.glb"
         )
 
         # if prompt in cached_glbs:
@@ -208,7 +217,9 @@ def register():
     )
 
     WindowManager.my_previews = EnumProperty(
-        items=enum_previews_from_directory_items
+        items=enum_previews_from_directory_items,
+        name="", description="", default=None,
+        options={'ANIMATABLE'}, update=None, get=None, set=None
     )
 
     pcoll = bpy.utils.previews.new()
@@ -226,6 +237,7 @@ def unregister():
     for class_ in CLASSES:
         bpy.utils.unregister_class(class_)
     del bpy.types.Scene.PromptProps
+    bpy.utils.previews.remove(preview_collection["main"])
 
 
 if __name__ == "__main__":
