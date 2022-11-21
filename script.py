@@ -1,14 +1,16 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import Pool
+from tempfile import NamedTemporaryFile
 
 import bpy
 import requests
 from bpy.types import Operator, Panel, PropertyGroup
-from multiprocessing import Pool
-from concurrent.futures import ThreadPoolExecutor
 
 MIRAGE_API = "https://api.mirageml.com"
 DEFAULT_PROMPT = "a photo of a wooden house, minecraft, computer graphics"
 PINEAPPLE_PROMPT = "a high quality photo of a pineapple"
+PUBLIC, PRIVATE = "PUBLIC", "PRIVATE"
 
 # app state
 preview_collection = {}
@@ -33,9 +35,18 @@ class API:
         return resp.json()["data"]
 
     @staticmethod
+    def list_public_projects(page):
+        resp = requests.get(
+            f"{MIRAGE_API}/texture-mesh/public-projects", params={"page": str(page)}
+        )
+        return resp.json()["data"]
+
+    @staticmethod
     def get_mesh_url_for_prompt(prompt, api_key, auth_key):
         (project,) = [
-            proj for proj in API.list_projects(api_key, auth_key) if proj["node"]["prompt"] == prompt
+            proj
+            for proj in API.list_projects(api_key, auth_key)
+            if proj["node"]["prompt"] == prompt
         ]
         return project["meshGLBUrl"]
 
@@ -48,6 +59,42 @@ class API:
         )
         return resp.json()
 
+    @staticmethod
+    def get_private_mesh_data(data):
+        image_paths = []
+        glbs = []
+        prompts = []
+        paths = []
+        urls = []
+        for i, node in enumerate(data):
+            mesh = node["node"]
+            path = "/tmp/" + mesh["id"] + ".png"
+            if not os.path.exists(path):
+                paths.append(path)
+                urls.append(mesh["meshPNGUrl"])
+            image_paths.append(mesh["id"] + ".png")
+            glbs.append(mesh["meshGLBUrl"])
+            prompts.append(mesh["prompt"])
+        return image_paths, glbs, prompts, paths, urls
+
+    @staticmethod
+    def get_public_mesh_data(data):
+        image_paths = []
+        glbs = []
+        prompts = []
+        paths = []
+        urls = []
+        for i, mesh in enumerate(data):
+            path = "/tmp/" + mesh["id"] + ".png"
+            if not os.path.exists(path):
+                paths.append(path)
+                urls.append(mesh["png_url"])
+            image_paths.append(mesh["id"] + ".png")
+            glbs.append(mesh["glb_url"])
+            prompts.append(mesh["mesh_prompt"])
+        return image_paths, glbs, prompts, paths, urls
+
+
 def batch_requests(params):
     path, url = params
     image_response = requests.get(url)
@@ -55,11 +102,23 @@ def batch_requests(params):
         f.write(image_response.content)
 
 
+def get_api_pages_enum(self, context):
+    if context.scene.public_private_toggle == PUBLIC:
+        n_pages = 5
+    elif context.scene.public_private_toggle == PRIVATE:
+        n_pages = 5
+    else:
+        raise ValueError
+
+    return [(f"page-{i}", f"page-{i}", "", i) for i in range(1, n_pages + 1)]
+
+
 def enum_previews_from_directory_items(self, context):
     """EnumProperty callback"""
     enum_items = []
 
-    if context is None: return enum_items
+    if context is None:
+        return enum_items
 
     wm = context.window_manager
     directory = wm.my_previews_dir
@@ -67,51 +126,70 @@ def enum_previews_from_directory_items(self, context):
     # Get the preview collection (defined in register func).
     pcoll = preview_collection["main"]
 
-    if directory == pcoll.my_previews_dir or len(pcoll.my_previews) != 0:
+    if preview_collection["data"] == context.scene.public_private_toggle and preview_collection["page"] == context.scene.api_pages_toggle:
         return pcoll.my_previews
 
-    data = API.list_projects(bpy.context.scene.PromptProps.api_key, bpy.context.scene.PromptProps.auth_token)
+    preview_collection["page"] = context.scene.api_pages_toggle
+    preview_collection["data"] = context.scene.public_private_toggle
+
+    # if directory == pcoll.my_previews_dir or len(pcoll.my_previews) != 0:
+    #     return pcoll.my_previews
+
+    try:
+        _, page = context.scene.api_pages_toggle.split("-")
+    except:
+        page = 1
+
+    if context.scene.public_private_toggle == PUBLIC:
+        data = API.list_public_projects(page=page)
+    elif context.scene.public_private_toggle == PRIVATE:
+        data = API.list_projects(
+            bpy.context.scene.PromptProps.api_key,
+            bpy.context.scene.PromptProps.auth_token,
+        )
+    else:
+        raise ValueError
 
     if not data or len(data) == 0:
         return preview_collection["default"]
 
-    if "thumbnails" in preview_collection:
-        return preview_collection["thumbnails"]
+    # if "thumbnails" in preview_collection:
+    #     return preview_collection["thumbnails"]
 
     print("RUNNING")
 
-    image_paths = []
-    prompts = []
-    paths = []
-    urls = []
-    for i, node in enumerate(data):
-        mesh = node["node"]
-        path = "/tmp/" + mesh["id"] + ".png"
-        if not os.path.exists(path):
-            paths.append(path)
-            urls.append(mesh["meshPNGUrl"])
-        image_paths.append(mesh["id"] + ".png")
-        prompts.append(mesh["prompt"])
+    if context.scene.public_private_toggle == PUBLIC:
+        image_paths, glbs, prompts, paths, urls = API.get_public_mesh_data(data)
+    elif context.scene.public_private_toggle == PRIVATE:
+        image_paths, glbs, prompts, paths, urls = API.get_private_mesh_data(data)
+    else:
+        raise ValueError
 
-    p = ThreadPoolExecutor()
-    p.map(batch_requests, zip(paths, urls))
-    # Close the pool and wait for the work to finish
-    p.shutdown(wait=True)
+    with ThreadPoolExecutor() as p:
+        p.map(batch_requests, zip(paths, urls))
 
-    for i, name in enumerate(image_paths):
+    for i, path in enumerate(image_paths):
         # generates a thumbnail preview for a file.
-        filepath = os.path.join(directory, name)
-        icon = pcoll.get(name)
+        filepath = os.path.join(directory, path)
+        icon = pcoll.get(glbs[i])
         if not icon:
-            thumb = pcoll.load(name, filepath, "IMAGE")
+            thumb = pcoll.load(glbs[i], filepath, "IMAGE")
         else:
-            thumb = pcoll[name]
-        enum_items.append((name, prompts[i], "", thumb.icon_id, i))
+            thumb = pcoll[glbs[i]]
+        enum_items.append((glbs[i], prompts[i], "", thumb.icon_id, i))
 
     pcoll.my_previews = enum_items
     pcoll.my_previews_dir = directory
     return pcoll.my_previews
 
+def enum_toggle(self, context):
+    """EnumProperty callback"""
+    enum_items = []
+    if context.scene.PromptProps.api_key and context.scene.PromptProps.auth_token:
+        enum_items = [(PUBLIC, "Public", "", 1), (PRIVATE, "Private", "", 2)]
+    else:
+        enum_items = [(PUBLIC, "Public", "", 1)]
+    return enum_items
 
 class PromptProps(PropertyGroup):
     new_prompt: bpy.props.StringProperty(default="")
@@ -126,7 +204,11 @@ class CreateNewMirageProjectOp(Operator):
 
     def execute(self, context):
         prompt = bpy.context.scene.PromptProps.new_prompt
-        API.create_project(prompt, bpy.context.scene.PromptProps.api_key, bpy.context.scene.PromptProps.auth_token)
+        API.create_project(
+            prompt,
+            bpy.context.scene.PromptProps.api_key,
+            bpy.context.scene.PromptProps.auth_token,
+        )
         return {"FINISHED"}
 
 
@@ -135,35 +217,26 @@ class DownloadFromMirageOp(Operator):
     bl_label = "Download from mirage"
 
     def execute(self, context):
-        prompt = bpy.context.scene.PromptProps.existing_prompt
+#        cached_glbs = None
+#        if prompt in cached_glbs:
+#            bpy.ops.import_scene.gltf(filepath=cached_glbs[prompt])
+#        else:
+        mesh_url = bpy.context.window_manager.my_previews
+        with requests.get(mesh_url, stream=True) as r, NamedTemporaryFile(
+            suffix=".glb"
+        ) as t:
+            for chunk in r.iter_content(chunk_size=8192):
+                t.write(chunk)
+            bpy.ops.import_scene.gltf(filepath=t.name)
 
-        cached_glbs = {
-            DEFAULT_PROMPT: "/Users/jeremyfisher/Downloads/mesh.glb",
-            PINEAPPLE_PROMPT: "/Users/jeremyfisher/Downloads/pineapple.glb",
-        }
 
-        bpy.ops.import_scene.gltf(
-            filepath="/Users/amankishore/Downloads/hamburger.glb"
-        )
-
-        # if prompt in cached_glbs:
-        #     bpy.ops.import_scene.gltf(filepath=cached_glbs[prompt])
-        # else:
-        #     # example_mesh_url = API.list_projects()[0]["node"]["meshGLBUrl"]
-        #     mesh_url = API.get_mesh_url_for_prompt(prompt)
-        #     with requests.get(mesh_url, stream=True) as r, NamedTemporaryFile(
-        #         suffix=".glb"
-        #     ) as t:
-        #         for chunk in r.iter_content(chunk_size=8192):
-        #             t.write(chunk)
-        #         bpy.ops.import_scene.gltf(filepath=t.name)
 
         return {"FINISHED"}
 
 
 class AddMiragePanel(Panel):
     bl_idname = "VIEW3D_PT_example_panel"
-    bl_label = "TextTo3D"
+    bl_label = "MirageML"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
 
@@ -187,10 +260,18 @@ class AddMiragePanel(Panel):
         #        row.prop(wm, "my_previews_dir")
 
         row = self.layout.row()
+        row.prop(context.scene, "public_private_toggle", expand=True, text="Show")
+
+        row = self.layout.row()
         row.template_icon_view(wm, "my_previews", show_labels=True)
 
         row = self.layout.row()
         row.prop(wm, "my_previews")
+
+        row = self.layout.row()
+        row.prop(context.scene, "api_pages_toggle", expand=True, text="Results Page")
+
+        self.layout.separator()
 
         row = self.layout.row()
         row.operator(operator="mesh.download_from_mirage", text="Add to Scene")
@@ -204,6 +285,7 @@ CLASSES = [
     DownloadFromMirageOp,
     AddMiragePanel,
     PromptProps,
+    # PublicPrivateProjectLibraryToggle,
 ]
 
 
@@ -218,25 +300,58 @@ def register():
 
     WindowManager.my_previews = EnumProperty(
         items=enum_previews_from_directory_items,
-        name="", description="", default=None,
-        options={'ANIMATABLE'}, update=None, get=None, set=None
+        name="",
+        description="",
+        default=None,
+        options={"ANIMATABLE"},
+        update=None,
+        get=None,
+        set=None,
     )
+
 
     pcoll = bpy.utils.previews.new()
     pcoll.my_previews_dir = ""
     pcoll.my_previews = ()
 
     preview_collection["main"] = pcoll
+    preview_collection["data"] = None
+    preview_collection["page"] = None
 
     for class_ in CLASSES:
         bpy.utils.register_class(class_)
     bpy.types.Scene.PromptProps = bpy.props.PointerProperty(type=PromptProps)
+
+    # Update public_private_toggle based on api key and auth token
+    bpy.types.Scene.public_private_toggle = bpy.props.EnumProperty(
+        items=enum_toggle,
+        name="Public",
+        description="Selected action center mode",
+        default=None,
+        options={"ANIMATABLE"},
+        update=None,
+        get=None,
+        set=None,
+    )
+
+    bpy.types.Scene.api_pages_toggle = EnumProperty(
+        items=get_api_pages_enum,
+        name="Page",
+        description="Select the projects page",
+        default=None,
+        options={"ANIMATABLE"},
+        update=None,
+        get=None,
+        set=None,
+    )
 
 
 def unregister():
     for class_ in CLASSES:
         bpy.utils.unregister_class(class_)
     del bpy.types.Scene.PromptProps
+    del bpy.types.Scene.public_private_toggle
+    del bpy.types.Scene.api_pages_toggle
     bpy.utils.previews.remove(preview_collection["main"])
 
 
