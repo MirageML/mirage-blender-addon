@@ -7,7 +7,7 @@ Please provide API credentials to your private Mirage account to access private 
 ​
 ## Installation
 ​
-Download the file and import it like a regular Blender Package. The plugin will be imported into your Unity Project inside `View3D > Tools > Mirage`.
+Download the file and import it like a regular Blender Package. The plugin will be imported into your Blender Project inside `View3D > Tools > Mirage`.
 ​
 ​
 ## Mirage Asset Browser
@@ -17,7 +17,10 @@ Browse and import Mirage models directly into Blender editor from the [app](http
 ## UI
 ​![UI](https://github.com/MirageML/mirage-blender-addon/blob/main/UI.png?raw=true)
 
-​
+## Walkthrough
+![Walkthrough](https://github.com/MirageML/mirage-blender-addon/blob/main/blender_mirage.gif?raw=true)
+
+
 ## Report an issue
 If you have any issue, please visit [join the discord](https://discord.gg/jxBMsK4MMn) and submit a support request.
 ​

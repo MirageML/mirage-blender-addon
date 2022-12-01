@@ -10,7 +10,7 @@ from bpy.types import Operator, Panel, PropertyGroup
 bl_info = {
     "name": "Mirage",
     "category": "Import-Export",
-    "version": (1, 0, 0),
+    "version": (0, 1, 0),
     "blender": (3, 3, 0),
     'location': 'View3D > Tools > Mirage',
     'description': 'Browse and Create 3D Models on Mirage',
@@ -20,8 +20,6 @@ bl_info = {
 }
 
 MIRAGE_API = "https://api.mirageml.com"
-DEFAULT_PROMPT = "a photo of a wooden house, minecraft, computer graphics"
-PINEAPPLE_PROMPT = "a high quality photo of a pineapple"
 PUBLIC, PRIVATE = "PUBLIC", "PRIVATE"
 
 # app state
@@ -206,7 +204,6 @@ def enum_toggle(self, context):
 
 class PromptProps(PropertyGroup):
     new_prompt: bpy.props.StringProperty(default="")
-    existing_prompt: bpy.props.StringProperty(default=DEFAULT_PROMPT)
     api_key: bpy.props.StringProperty(default="")
     auth_token: bpy.props.StringProperty(default="")
     search_query: bpy.props.StringProperty(default="")
@@ -215,7 +212,8 @@ class PromptProps(PropertyGroup):
 
 class CreateNewMirageProjectOp(Operator):
     bl_idname = "mesh.create_new_mirage_project"
-    bl_label = "Create new mirage project"
+    bl_label = "Create new Mirage project"
+    bl_description ="Create new Mirage project"
 
     def execute(self, context):
         prompt = context.scene.PromptProps.new_prompt
@@ -228,7 +226,8 @@ class CreateNewMirageProjectOp(Operator):
 
 class SearchMirageProjectOp(Operator):
     bl_idname = "mesh.search_projects"
-    bl_label = "Search projects"
+    bl_label = "Search projects on app.mirageml.com"
+    bl_description ="Search projects"
 
     def execute(self, context):
         context.scene.PromptProps.search = context.scene.PromptProps.search_query
@@ -237,7 +236,8 @@ class SearchMirageProjectOp(Operator):
 
 class DownloadFromMirageOp(Operator):
     bl_idname = "mesh.download_from_mirage"
-    bl_label = "Download from mirage"
+    bl_label = "Download from Mirage"
+    bl_description ="Download from Mirage"
 
     def execute(self, context):
 #        cached_glbs = None
@@ -370,7 +370,6 @@ def unregister():
         bpy.utils.unregister_class(class_)
     del bpy.types.Scene.PromptProps
     del bpy.types.Scene.public_private_toggle
-    del bpy.types.Scene.api_pages_toggle
     bpy.utils.previews.remove(preview_collection["main"])
 
 
